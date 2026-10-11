@@ -1,0 +1,87 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// A single imported bank-statement row, normalized to a common shape
+// regardless of which bank export format it came from.
+model Transaction {
+  id                String           @id @default(cuid())
+  date              DateTime
+  amountCents       Int
+  rawDescription    String
+  account           String
+  merchantClusterId String?
+  merchantCluster   MerchantCluster? @relation(fields: [merchantClusterId], references: [id])
+  createdAt         DateTime         @default(now())
+}
+
+// Transactions grouped under one normalized merchant identity
+// (e.g. "NETFLIX.COM 134-XXXX SYDNEY AU" -> "Netflix").
+model MerchantCluster {
+  id            String        @id @default(cuid())
+  canonicalName String
+  transactions  Transaction[]
+  subscription  Subscription?
+  override      Override?
+  createdAt     DateTime      @default(now())
+}
+
+enum DetectionSource {
+  DETERMINISTIC
+  LLM
+}
+
+enum SubscriptionStatus {
+  ACTIVE
+  FLAGGED_FOR_CANCEL
+  CANCELLED
+  DISMISSED
+}
+
+// A merchant cluster the detector (or the LLM, for ambiguous cases)
+// believes is a recurring subscription.
+model Subscription {
+  id                    String             @id @default(cuid())
+  merchantClusterId     String             @unique
+  merchantCluster       MerchantCluster    @relation(fields: [merchantClusterId], references: [id])
+  serviceName           String?
+  category              String?
+  intervalDays          Int?
+  confidence            Float
+  source                DetectionSource
+  status                SubscriptionStatus @default(ACTIVE)
+  monthlyCostCents      Int?
+  lastAmountCents       Int?
+  priceIncreaseDetected Boolean            @default(false)
+  cancellationDraft     CancellationDraft?
+  createdAt             DateTime           @default(now())
+  updatedAt             DateTime           @updatedAt
+}
+
+// A user correction ("this is not a subscription", "wrong category")
+// that suppresses the same false positive on future imports.
+model Override {
+  id                String          @id @default(cuid())
+  merchantClusterId String          @unique
+  merchantCluster   MerchantCluster @relation(fields: [merchantClusterId], references: [id])
+  isSubscription    Boolean
+  note              String?
+  createdAt         DateTime        @default(now())
+}
+
+// Drafted cancellation text for a subscription the user flagged to cancel.
+// Never sent automatically - draftText is reviewed/edited by the user,
+// `approved` just tracks that they've signed off on using it.
+model CancellationDraft {
+  id             String       @id @default(cuid())
+  subscriptionId String       @unique
+  subscription   Subscription @relation(fields: [subscriptionId], references: [id])
+  draftText      String
+  approved       Boolean      @default(false)
+  createdAt      DateTime     @default(now())
+}
